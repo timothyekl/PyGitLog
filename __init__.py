@@ -41,6 +41,7 @@ class History:
         self.logger.info("Parsing complete:")
         self.logger.info("    {} commits".format(len(self.commits)))
         self.logger.info("    {} authors".format(len(self.authors)))
+        self.logger.info("    {} committers".format(len(self.authors)))
         self.logger.info("    Operation took {} seconds".format(etime - stime))
     
 
@@ -61,8 +62,10 @@ class Parser:
         Remove any past results from this parser.
         """
         self._currentCommit = None
-        self._commits = []
+        self._commits = {}
         self._authors = {}
+        self._committers = {}
+        self._developers = {}
     
     def parse(self, text):
         """
@@ -73,8 +76,8 @@ class Parser:
         """
         
         self.clear()
-        
         lines = text.split("\n")
+        self.logger.info("Parsing Git history")
         
         for line in lines:
             if len(line) == 0:
@@ -94,13 +97,16 @@ class Parser:
                 
                 keyword = line[:spaceIdx]
                 content = line[spaceIdx+1:]
-                self.logger.info("Found key-value pair: {0} {1}".format(keyword, content))
+                self.logger.debug("Found key-value pair: {0} {1}".format(keyword, content))
                 
                 self._handleKeyValue(keyword, content)
         
-        # Grab the last commit and be done
-        self._commits.append(self._currentCommit)
+        # Grab the last commit
+        self._commits[self._currentCommit.hashKey] = self._currentCommit
         self._currentCommit = None
+        
+        # Finalize the commit tree
+        self._resolveCommits()
     
     def getCommits(self):
         return self._commits
@@ -111,38 +117,102 @@ class Parser:
     def _handleKeyValue(self, keyword, content):
         if keyword == "commit":
             if not self._currentCommit == None:
-                self._commits.append(self._currentCommit)
+                self._commits[self._currentCommit.hashKey] = self._currentCommit
             self._currentCommit = Commit(hashKey=content)
             
         elif keyword == "author":
-            parts = content.split(' ')
+            (developer, timestamp) = self._findDeveloperAndTimestamp(content)
             
-            timezone = parts.pop()
-            timestamp = parts.pop()
+            if not str(developer) in self._authors:
+                self._authors[str(developer)] = developer
+            self._currentCommit.author = developer
             
-            # Set commit's author, either from cache or by making new Author
-            devKey = ' '.join(parts)
-            if devKey in self._authors:
-                self._currentCommit.author = self._authors[devKey]
+        elif keyword == "committer":
+            (developer, timestamp) = self._findDeveloperAndTimestamp(content)
+            
+            if not str(developer) in self._committers:
+                self._committers[str(developer)] = developer
+            self._currentCommit.committer = developer
+            
+        elif keyword == "parent":
+            if content in self._commits:
+                self._currentCommit.parents[content] = self._commits[content]
             else:
-                email = re.sub("<>", "", (re.findall("<.*>", devKey))[0])
-                name = devKey.replace(" <{0}>".format(email), "")
-                author = Developer(name=name, email=email)
-                self._currentCommit.author = author
-                self._authors[devKey] = author
+                self._currentCommit.parents[content] = content
+            
+        elif keyword == "tree":
+            self._currentCommit.tree = content
             
         else:
             self.logger.warn("Ignoring unrecognized commit keyword: " + keyword)
+    
+    def _findDeveloperAndTimestamp(self, text):
+        """
+        Given a line of text, break out a Developer and Timestamp object.
+        Returns a tuple (dev, ts).
+        """
+        
+        parts = text.split(' ')
+        
+        tz = parts.pop()
+        epoch = parts.pop()
+        timestamp = Timestamp(epoch, tz)
+        
+        # Get Developer, either from cache or by making new object
+        devKey = ' '.join(parts)
+        if devKey in self._developers:
+            developer = self._developers[devKey]
+        else:
+            email = re.sub("<>", "", (re.findall("<.*>", devKey))[0])
+            name = devKey.replace(" <{0}>".format(email), "")
+            developer = Developer(name=name, email=email)
+            self._developers[devKey] = developer
+        
+        return (developer, timestamp)
+    
+    def _resolveCommits(self):
+        """
+        Iterate through all Commits being processed and replace any parent
+        hash key placeholders with their corresponding Commit objects.
+        Typically run at the end of a parse to ensure that all Commits are
+        linked properly.
+        """
+        
+        self.logger.info("Resolving {0} commit parents".format(sum(map((lambda x : len([p for p in self._commits[x].parents if isinstance(self._commits[x].parents[p], str)])), self._commits))))
+        for hashKey in self._commits:
+            for parentKey in self._commits[hashKey].parents:
+                if isinstance(self._commits[hashKey].parents[parentKey], str):
+                    self.logger.debug("Replacing parent key {0} with actual commit".format(parentKey))
+                    self._commits[hashKey].parents[parentKey] = self._commits[parentKey]
 
 class Commit:
-    def __init__(self, hashKey, author=None):
+    """
+    Represents a single commit to a Git repository. A commit is identified
+    by its hash, author, parents, and tree, where:
+     - hash is the string SHA1 hash of the commit blob
+     - author is a Developer who wrote the change
+     - committer is a Developer who committed the change
+     - parents is a list of Commit objects that are this Commit's parents
+     - tree is the string SHA1 hash of the commit blob's tree blob
+    """
+    
+    def __init__(self, hashKey, author=None, committer=None, parents=None, tree=None):
         self.hashKey = hashKey
         self.author = author
+        self.committer = committer
+        if not isinstance(parents, dict):
+            self.parents = {}
+        else:
+            self.parents = parents
+        self.tree = tree
 
 class Developer:
     def __init__(self, name, email):
         self.name = name
         self.email = email
+    
+    def __str__(self):
+        return "{0} <{1}>".format(self.name, self.email)
 
 class Timestamp:
     def __init__(self, epoch, timezone):
@@ -166,4 +236,4 @@ class NullLogger:
         pass
 
 # Set up logging
-logging.basicConfig(filename="pygitlog.log", level=logging.DEBUG, filemode='w')
+logging.basicConfig(filename="pygitlog.log", level=logging.INFO, filemode='w')
