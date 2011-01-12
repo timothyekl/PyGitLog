@@ -1,6 +1,7 @@
 import logging
 import os
 import os.path
+import re
 import subprocess
 import time
 
@@ -32,9 +33,15 @@ class History:
         # Parse commit info
         stime = time.time()
         p = Parser(log=self.log)
-        self.commits = p.parse(logText)
+        p.parse(logText)
+        self.commits = p.getCommits()
+        self.authors = p.getAuthors()
         etime = time.time()
-        self.logger.info("Found {0} commits in {1} seconds".format(len(self.commits), etime - stime))
+        
+        self.logger.info("Parsing complete:")
+        self.logger.info("    {} commits".format(len(self.commits)))
+        self.logger.info("    {} authors".format(len(self.authors)))
+        self.logger.info("    Operation took {} seconds".format(etime - stime))
     
 
 class Parser:
@@ -49,17 +56,25 @@ class Parser:
         else:
             self.logger = NullLogger()
     
+    def clear(self):
+        """
+        Remove any past results from this parser.
+        """
+        self._currentCommit = None
+        self._commits = []
+        self._authors = {}
+    
     def parse(self, text):
         """
         Parse the raw text of a Git history into a list of GitCommit
         objects. Expects a single unbroken string (not a list of
-        strings representing lines).
+        strings representing lines). Clears any past parse results
+        stored in this Parser.
         """
         
-        lines = text.split("\n")
+        self.clear()
         
-        self._currentCommit = None
-        self._commits = []
+        lines = text.split("\n")
         
         for line in lines:
             if len(line) == 0:
@@ -86,19 +101,53 @@ class Parser:
         # Grab the last commit and be done
         self._commits.append(self._currentCommit)
         self._currentCommit = None
+    
+    def getCommits(self):
         return self._commits
+    
+    def getAuthors(self):
+        return self._authors
     
     def _handleKeyValue(self, keyword, content):
         if keyword == "commit":
             if not self._currentCommit == None:
                 self._commits.append(self._currentCommit)
-            self._currentCommit = Commit()
+            self._currentCommit = Commit(hashKey=content)
+            
+        elif keyword == "author":
+            parts = content.split(' ')
+            
+            timezone = parts.pop()
+            timestamp = parts.pop()
+            
+            # Set commit's author, either from cache or by making new Author
+            devKey = ' '.join(parts)
+            if devKey in self._authors:
+                self._currentCommit.author = self._authors[devKey]
+            else:
+                email = re.sub("<>", "", (re.findall("<.*>", devKey))[0])
+                name = devKey.replace(" <{0}>".format(email), "")
+                author = Developer(name=name, email=email)
+                self._currentCommit.author = author
+                self._authors[devKey] = author
+            
         else:
             self.logger.warn("Ignoring unrecognized commit keyword: " + keyword)
 
 class Commit:
-    def __init__(self):
-        pass
+    def __init__(self, hashKey, author=None):
+        self.hashKey = hashKey
+        self.author = author
+
+class Developer:
+    def __init__(self, name, email):
+        self.name = name
+        self.email = email
+
+class Timestamp:
+    def __init__(self, epoch, timezone):
+        self.epoch = epoch
+        self.timezone = timezone
 
 class NullLogger:
     """
