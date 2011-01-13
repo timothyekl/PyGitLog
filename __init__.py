@@ -12,7 +12,7 @@ class History:
     support git: or http: URLs.
     """
     
-    def __init__(self, path, log=False):
+    def __init__(self, path, log=logging.NOTSET):
         self.log = log
         if self.log:
             self.logger = logging.getLogger('pygitlog.History')
@@ -126,6 +126,7 @@ class Parser:
             if not str(developer) in self._authors:
                 self._authors[str(developer)] = developer
             self._currentCommit.author = developer
+            self._authors[str(developer)].commits[self._currentCommit.hashKey] = self._currentCommit
             
         elif keyword == "committer":
             (developer, timestamp) = self._findDeveloperAndTimestamp(content)
@@ -163,8 +164,10 @@ class Parser:
         if devKey in self._developers:
             developer = self._developers[devKey]
         else:
-            email = re.sub("<>", "", (re.findall("<.*>", devKey))[0])
+            email = (re.findall("<.*>", devKey))[0].replace("<", "").replace(">", "")
+            self.logger.debug("Found author email {0}".format(email))
             name = devKey.replace(" <{0}>".format(email), "")
+            self.logger.debug("Found author name {0}".format(name))
             developer = Developer(name=name, email=email)
             self._developers[devKey] = developer
         
@@ -210,6 +213,7 @@ class Developer:
     def __init__(self, name, email):
         self.name = name
         self.email = email
+        self.commits = {}
     
     def __str__(self):
         return "{0} <{1}>".format(self.name, self.email)
