@@ -1,3 +1,4 @@
+import codecs
 import logging
 import os
 import os.path
@@ -24,11 +25,16 @@ class History:
             path = os.path.expanduser(path)
         self.path = os.path.normpath(path)
         
-        self.logger.info("Created GitHistory from path " + self.path)
+        self.logger.info("Created GitHistory with path " + self.path)
         
         # Grab and store commit info
-        os.chdir(self.path)
-        logText = subprocess.getoutput("git log --pretty=raw")
+        #os.chdir(self.path)
+        #logText = subprocess.getoutput("git log --pretty=raw")
+        logLines = []
+        logProcess = subprocess.Popen("git log --pretty=raw", stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.path, shell=True)
+        for line in logProcess.stdout:
+            logLines.append(str(bytes([b for b in line if b < 128]), 'ascii', 'replace'))
+        logText = "".join(logLines)
         
         # Parse commit info
         stime = time.time()
@@ -44,6 +50,10 @@ class History:
         self.logger.info("    {} committers".format(len(self.authors)))
         self.logger.info("    Operation took {} seconds".format(etime - stime))
     
+    def authorWithName(self, name):
+        for aKey in self.authors:
+            if self.authors[aKey].name == name:
+                return self.authors[aKey]
 
 class Parser:
     """
